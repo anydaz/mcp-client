@@ -1,9 +1,8 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import axios from "axios";
+import { useQuery } from "@tanstack/react-query";
 import React, { createContext, useContext, useState, ReactNode } from "react";
 import { Message } from "../interfaces/ChatInterface";
 import { getTools } from "../client/ChatClient";
-import { apiFetch } from "@/lib/apiClient";
+import { streamChat } from "../utils/ChatUtils";
 
 interface Tool {
   name: string;
@@ -33,60 +32,23 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     refetchOnWindowFocus: false,
   });
 
-  const postChat = async (newMessages: Message[]) => {
-    const res = await apiFetch<{ text: string; tool_calls?: any[] }>({
-      endpoint: "/api/chat",
-      options: {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: newMessages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-          tools: tools || undefined,
-        }),
-      },
-    });
-    return res;
-  };
-
-  const chatMutation = useMutation({
-    mutationFn: postChat,
-    onMutate: () => {
-      setChatLoading(true);
-      setChatError(null);
-    },
-    onError: (error: any) => {
-      setChatError(error?.message || "Unknown error");
-      setChatLoading(false);
-    },
-    onSuccess: (data) => {
-      const msgsToAdd: Message[] = [];
-      if (Array.isArray(data.tool_calls)) {
-        for (const tool of data.tool_calls) {
-          msgsToAdd.push({
-            role: "assistant",
-            content: `[Calling tool ${tool.name} with args ${JSON.stringify(
-              tool.input
-            )}]`,
-          });
-        }
-      }
-      let assistantMsg = data?.text;
-      msgsToAdd.push({ role: "assistant", content: assistantMsg });
-      setMessages((msgs) => [...msgs, ...msgsToAdd]);
-      setChatLoading(false);
-    },
-  });
-
-  const sendChat = (chatInput: string) => {
+  // Streaming chat implementation
+  const sendChat = async (chatInput: string) => {
     const newMessages: Message[] = [
       ...messages,
       { role: "user", content: chatInput },
     ];
     setMessages(newMessages);
-    chatMutation.mutate(newMessages);
+    setChatLoading(true);
+    setChatError(null);
+
+    try {
+      await streamChat(newMessages, setMessages, tools);
+      setChatLoading(false);
+    } catch (error: any) {
+      setChatError(error?.message || "Unknown error");
+      setChatLoading(false);
+    }
   };
 
   return (

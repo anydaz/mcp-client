@@ -1,53 +1,26 @@
-import { apiFetch } from "@/lib/apiClient";
 import { Message, Tool } from "@/modules/chat/interfaces/ChatInterface";
 import { NextRequest } from "next/server";
-import { env } from "process";
 
-const callAnthropicAPI = async (
+const callAnthropicAPIStream = async (
   apiKey: string,
   messages: Message[],
   tools: Tool[]
 ) => {
-  const data = await apiFetch<{
-    content: Array<{ name: string; type: string; text?: string; input?: any }>;
-  }>({
-    baseUrl: "https://api.anthropic.com",
-    endpoint: "/v1/messages",
-    options: {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1024,
-        messages,
-        tools: tools || undefined,
-      }),
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
     },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      messages,
+      tools: tools || undefined,
+      stream: true,
+    }),
   });
-
-  return data;
-};
-
-const callMCPTool = async (toolName: string, input: any) => {
-  const origin = env.MCP_SERVER_URL;
-  const body = JSON.stringify({ ...input });
-
-  const res = await apiFetch<{
-    content: unknown;
-  }>({
-    baseUrl: origin,
-    endpoint: `/mcp/${toolName}`,
-    options: {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    },
-  });
-
   return res;
 };
 
@@ -61,38 +34,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const data = await callAnthropicAPI(apiKey, messages, tools);
-
-  // Process content array for text and tool_use events
-  let finalText: string[] = [];
-  let toolCalls: { name: string; input: any }[] = [];
-
-  if (Array.isArray(data.content)) {
-    for (const content of data.content) {
-      if (content.type === "text") {
-        finalText.push(content.text || "");
-      } else if (content.type === "tool_use" && content.name) {
-        const toolName = content.name;
-
-        const res = await callMCPTool(toolName, content.input);
-        toolCalls.push({ name: content.name, input: content.input });
-        messages.push({ role: "user", content: res.content });
-
-        // Call Anthropic again with tool result
-        const dt = await callAnthropicAPI(apiKey, messages, []);
-        finalText.push(
-          dt.content[0].type === "text" ? dt.content[0].text || "" : ""
-        );
-      }
-    }
+  // Stream Anthropic response directly to client
+  const anthropicRes = await callAnthropicAPIStream(apiKey, messages, tools);
+  if (!anthropicRes.body) {
+    return new Response("No stream body", { status: 500 });
   }
-
-  // Compose response for client
-  const result = {
-    ...data,
-    text: finalText.join("\n"),
-    tool_calls: toolCalls,
-  };
-
-  return new Response(JSON.stringify(result), { status: 200 });
+  return new Response(anthropicRes.body, {
+    status: anthropicRes.status,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }
